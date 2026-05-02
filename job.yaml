@@ -1,0 +1,130 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gddpm
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1209600    # 14 days — multi-seed (4×) + repeated CV (15 fits/model) needs headroom
+  template:
+    spec:
+      restartPolicy: OnFailure
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-40GB
+                - NVIDIA-A100-SXM4-80GB
+                - NVIDIA-RTX-A6000
+                - NVIDIA-GeForce-RTX-3090
+                - NVIDIA-GeForce-RTX-2080-Ti
+      containers:
+      - name: gddpm
+        image: nvcr.io/nvidia/pytorch:23.10-py3
+        imagePullPolicy: IfNotPresent
+
+        env:
+        - name: REPO_PATH
+          value: /opt/repo/gddpm
+
+        command:
+        - "bash"
+        - "-c"
+        - |
+          set -e
+          echo "=== Checking GPU ==="
+          nvidia-smi
+
+          echo "=== Cloning / updating repo ==="
+          mkdir -p /opt/repo && cd /opt/repo
+          if [ -d "gddpm" ]; then
+            cd gddpm && git pull origin main
+          else
+            git clone --single-branch -b main \
+              https://github.com/Deb-bie/gddpm.git \
+              gddpm
+            cd gddpm
+          fi
+
+          echo "=== Installing dependencies ==="
+          # Remove ALL opencv variants — including the one baked into the base image
+          pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python \
+            opencv-contrib-python-headless 2>/dev/null || true
+          # Remove pre-installed packages that conflict with our pinned versions.
+          # timm: base image has older version, HybridV2 needs features_only API from >=0.9
+          # optuna: base image may have older version incompatible with TPESampler API
+          pip uninstall -y shap diffusers transformers huggingface_hub timm optuna 2>/dev/null || true
+          # Install pinned opencv first so everything that depends on cv2 gets the right version
+          pip install -q opencv-python-headless==4.8.1.78
+          pip install -q -r requirements.txt
+          # Gap 27 — LPIPS diversity metrics (not in base image, may not be in requirements.txt)
+          pip install -q lpips
+
+          echo "=== Starting pipeline ==="
+          python gastrovision_pipeline.py \
+            --data_dir            /data/gastrovision/data         \
+            --output_dir          /data/gastrovision               \
+            --image_root          gastrovision_raw/Gastrovision    \
+            --batch_size          16                               \
+            --freeze_epochs       16                               \
+            --fine_tune_epochs    24                               \
+            --lora_rank           4                                \
+            --lora_alpha          8                                \
+            --sd_batch_size       1                                \
+            --sd_grad_accum       16                               \
+            --domain_adapt_steps  15000                            \
+            --samples_per_class   500                              \
+            --gen_steps           40                               \
+            --guidance_scale      7.0                              \
+            --gen_batch_size      1                                \
+            --seeds               42 123 456 789                   \
+            --loss_type           focal                            \
+            --gan_collapse_threshold 0.02                          \
+            --gan_collapse_patience  10                            \
+            --lora_rank_list      4 8 16 32                        \
+            --models efficientnetv2_rw_s swin mobile hybrid_cnn_transformer_v2
+            # ── Optional flags (uncomment to enable) ─────────────────────────
+            # --tune                   # Optuna hyperparameter search before training
+            # --tune_trials 15         # number of Optuna trials per model (default 15)
+            # --tune_epochs 8          # epochs per trial (default 8)
+            # --run_gan_baseline       # train DCGAN + build S5 (real+GAN) strategy
+            # --single_split           # bypass repeated CV; use a single train/val split
+            # --cost_matrix_path /data/gastrovision/cost_matrix.json  # custom cost weights
+            # --skip_domain_adapt      # skip if EMA adapter already on PVC
+            # --skip_generation        # skip if synthetic images already on PVC
+            # --skip_training          # skip all classifier training
+            # --evaluate_only          # only run evaluation on existing checkpoints
+
+        volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: git-volume
+          mountPath: /opt/repo
+        - name: gastro-data-volume
+          mountPath: /data
+
+        resources:
+          limits:
+            memory: 64Gi       # raised from 40Gi — multi-seed checkpoints + InceptionV3 + LPIPS net resident
+            cpu: "8"
+            nvidia.com/gpu: "1"
+            ephemeral-storage: 80Gi   # raised from 50Gi — 4 seeds × model checkpoints + GAN ckpts + synth images
+          requests:
+            memory: 24Gi       # raised from 16Gi
+            cpu: "4"
+            nvidia.com/gpu: "1"
+            ephemeral-storage: 40Gi   # raised from 20Gi
+
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi
+      - name: git-volume
+        emptyDir: {}
+      - name: gastro-data-volume
+        persistentVolumeClaim:
+          claimName: gastro-data-pvc
