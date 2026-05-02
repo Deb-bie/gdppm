@@ -28,7 +28,7 @@ spec:
 
         env:
         - name: REPO_PATH
-          value: /opt/repo/gddpm
+          value: /opt/repo/gdppm
 
         command:
         - "bash"
@@ -40,13 +40,13 @@ spec:
 
           echo "=== Cloning / updating repo ==="
           mkdir -p /opt/repo && cd /opt/repo
-          if [ -d "gddpm" ]; then
-            cd gddpm && git pull origin main
+          if [ -d "gdppm" ]; then
+            cd gdppm && git pull origin main
           else
             git clone --single-branch -b main \
-              https://github.com/Deb-bie/gddpm.git \
-              gddpm
-            cd gddpm
+              https://github.com/Deb-bie/gdppm.git \
+              gdppm
+            cd gdppm
           fi
 
           echo "=== Installing dependencies ==="
