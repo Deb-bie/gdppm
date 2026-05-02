@@ -85,7 +85,7 @@ spec:
             --gan_collapse_threshold 0.02                          \
             --gan_collapse_patience  10                            \
             --lora_rank_list      4 8 16 32                        \
-            --models efficientnetv2_rw_s swin mobile hybrid_cnn_transformer_v2
+            --models efficientnetv2_rw_s swin hybrid_cnn_transformer_v2
             # ── Optional flags (uncomment to enable) ─────────────────────────
             # --tune                   # Optuna hyperparameter search before training
             # --tune_trials 15         # number of Optuna trials per model (default 15)
@@ -103,20 +103,20 @@ spec:
           mountPath: /dev/shm
         - name: git-volume
           mountPath: /opt/repo
-        - name: gastro-data-volume
+        - name: gdppm-data-volume
           mountPath: /data
 
         resources:
           limits:
-            memory: 64Gi       # raised from 40Gi — multi-seed checkpoints + InceptionV3 + LPIPS net resident
+            memory: 64Gi  
             cpu: "8"
             nvidia.com/gpu: "1"
-            ephemeral-storage: 80Gi   # raised from 50Gi — 4 seeds × model checkpoints + GAN ckpts + synth images
+            ephemeral-storage: 80Gi 
           requests:
-            memory: 24Gi       # raised from 16Gi
+            memory: 24Gi 
             cpu: "4"
             nvidia.com/gpu: "1"
-            ephemeral-storage: 40Gi   # raised from 20Gi
+            ephemeral-storage: 40Gi 
 
       volumes:
       - name: dshm
@@ -125,6 +125,6 @@ spec:
           sizeLimit: 8Gi
       - name: git-volume
         emptyDir: {}
-      - name: gastro-data-volume
+      - name: gdppm-data-volume
         persistentVolumeClaim:
-          claimName: gastro-data-pvc
+          claimName: gdppm-data-pvc
