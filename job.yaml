@@ -49,20 +49,92 @@ spec:
             cd gdppm
           fi
 
-          echo "=== Installing dependencies ==="
-          # Remove ALL opencv variants — including the one baked into the base image
+          echo "=== Removing conflicting base-image packages ==="
+          # opencv: remove ALL variants (base image bakes one in; we pin 4.8.1.78)
           pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python \
             opencv-contrib-python-headless 2>/dev/null || true
-          # Remove pre-installed packages that conflict with our pinned versions.
-          # timm: base image has older version, HybridV2 needs features_only API from >=0.9
-          # optuna: base image may have older version incompatible with TPESampler API
+ 
+          # Packages whose base-image versions conflict with our pinned versions:
+          #   timm     — base has older version; HybridV2 needs features_only (>=0.9)
+          #   optuna   — base may have older TPESampler API
+          #   diffusers / transformers / huggingface_hub — we pin exact versions
           pip uninstall -y shap diffusers transformers huggingface_hub timm optuna 2>/dev/null || true
-          # Install pinned opencv first so everything that depends on cv2 gets the right version
+ 
+          # RAPIDS / NVIDIA utility packages we do NOT use.
+          # These conflict with pandas 2.x and cause noisy (non-fatal) pip warnings.
+          pip uninstall -y cudf dask-cuda dask-cudf torch-tensorrt \
+            torchdata torchtext 2>/dev/null || true
+ 
+          echo "=== Pinning opencv before requirements ==="
+          # Install opencv first so everything that imports cv2 gets the right binary.
           pip install -q opencv-python-headless==4.8.1.78
-          pip install -q -r requirements.txt
-          # Gap 27 — LPIPS diversity metrics (not in base image, may not be in requirements.txt)
+ 
+          echo "=== Freezing torch to base-image version ==="
+          # Record the torch version already compiled against the node's CUDA libs.
+          # We pass --constraint so pip never silently upgrades torch while resolving
+          # our other requirements (an upgrade breaks torchvision ABI compatibility).
+          TORCH_VER=$(python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "")
+          if [ -n "$TORCH_VER" ]; then
+            echo "torch==${TORCH_VER}" > /tmp/torch_constraint.txt
+            echo "torchvision" >> /tmp/torch_constraint.txt   # let torchvision float
+            PIP_CONSTRAINT=/tmp/torch_constraint.txt pip install -q -r requirements.txt
+          else
+            pip install -q -r requirements.txt
+          fi
+ 
+          echo "=== Installing lpips (Gap 27 diversity metrics) ==="
+          # Installed separately as a safety net — also present in requirements.txt.
           pip install -q lpips
-
+ 
+          echo "=== Patching VAE / text-encoder device mismatch ==="
+          # When CPU offload is active (11 GB VRAM nodes), vae and text_encoder sit on
+          # CPU but pv/ii are on CUDA, causing:
+          #   RuntimeError: Input type (torch.cuda.FloatTensor) and
+          #                  weight type (torch.FloatTensor) should be the same
+          # Fix: resolve the device at runtime by moving the input to wherever the
+          # model lives, then moving the output back to DEVICE for the training step.
+          python3 - << 'PATCH'
+import sys
+ 
+with open("gastrovision_pipeline.py") as f:
+    txt = f.read()
+ 
+changes = 0
+ 
+# ── Fix 1: VAE encode ────────────────────────────────────────────────────────
+old1 = "            lat = vae.encode(pv).latent_dist.sample() * vae.config.scaling_factor"
+new1 = (
+    "            _vae_dev = next(vae.parameters()).device\n"
+    "            lat = vae.encode(pv.to(_vae_dev)).latent_dist.sample() * vae.config.scaling_factor\n"
+    "            lat = lat.to(DEVICE)"
+)
+if old1 in txt:
+    txt = txt.replace(old1, new1, 1)
+    changes += 1
+    print("  ✓ VAE encode patch applied")
+else:
+    print("  ⚠ VAE encode line not found — skipping (may already be patched)")
+ 
+# ── Fix 2: text encoder forward ──────────────────────────────────────────────
+old2 = "            hs = text_encoder(ii)[0]"
+new2 = (
+    "            _te_dev = next(text_encoder.parameters()).device\n"
+    "            hs = text_encoder(ii.to(_te_dev))[0]\n"
+    "            hs = hs.to(DEVICE)"
+)
+if old2 in txt:
+    txt = txt.replace(old2, new2, 1)
+    changes += 1
+    print("  ✓ text_encoder forward patch applied")
+else:
+    print("  ⚠ text_encoder line not found — skipping (may already be patched)")
+ 
+with open("gastrovision_pipeline.py", "w") as f:
+    f.write(txt)
+ 
+print(f"  Patch complete ({changes}/2 fixes applied)")
+PATCH
+ 
           echo "=== Starting pipeline ==="
           python gastrovision_pipeline.py \
             --data_dir            /data/gastrovision/data         \
@@ -85,18 +157,19 @@ spec:
             --gan_collapse_threshold 0.02                          \
             --gan_collapse_patience  10                            \
             --lora_rank_list      4 8 16 32                        \
-            --models efficientnetv2_rw_s swin hybrid_cnn_transformer_v2
+            --models efficientnetv2_rw_s swin mobile hybrid_cnn_transformer_v2
             # ── Optional flags (uncomment to enable) ─────────────────────────
             # --tune                   # Optuna hyperparameter search before training
             # --tune_trials 15         # number of Optuna trials per model (default 15)
             # --tune_epochs 8          # epochs per trial (default 8)
             # --run_gan_baseline       # train DCGAN + build S5 (real+GAN) strategy
             # --single_split           # bypass repeated CV; use a single train/val split
-            # --cost_matrix_path /data/gastrovision/cost_matrix.json  # custom cost weights
+            # --cost_matrix_path /data/gastrovision/cost_matrix.json
             # --skip_domain_adapt      # skip if EMA adapter already on PVC
             # --skip_generation        # skip if synthetic images already on PVC
             # --skip_training          # skip all classifier training
             # --evaluate_only          # only run evaluation on existing checkpoints
+ 
 
         volumeMounts:
         - name: dshm
