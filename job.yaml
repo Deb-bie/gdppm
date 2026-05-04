@@ -94,46 +94,46 @@ spec:
           # Fix: resolve the device at runtime by moving the input to wherever the
           # model lives, then moving the output back to DEVICE for the training step.
           python3 - << 'PATCH'
-import sys
- 
-with open("gastrovision_pipeline.py") as f:
-    txt = f.read()
- 
-changes = 0
- 
-# ── Fix 1: VAE encode ────────────────────────────────────────────────────────
-old1 = "            lat = vae.encode(pv).latent_dist.sample() * vae.config.scaling_factor"
-new1 = (
-    "            _vae_dev = next(vae.parameters()).device\n"
-    "            lat = vae.encode(pv.to(_vae_dev)).latent_dist.sample() * vae.config.scaling_factor\n"
-    "            lat = lat.to(DEVICE)"
-)
-if old1 in txt:
-    txt = txt.replace(old1, new1, 1)
-    changes += 1
-    print("  ✓ VAE encode patch applied")
-else:
-    print("  ⚠ VAE encode line not found — skipping (may already be patched)")
- 
-# ── Fix 2: text encoder forward ──────────────────────────────────────────────
-old2 = "            hs = text_encoder(ii)[0]"
-new2 = (
-    "            _te_dev = next(text_encoder.parameters()).device\n"
-    "            hs = text_encoder(ii.to(_te_dev))[0]\n"
-    "            hs = hs.to(DEVICE)"
-)
-if old2 in txt:
-    txt = txt.replace(old2, new2, 1)
-    changes += 1
-    print("  ✓ text_encoder forward patch applied")
-else:
-    print("  ⚠ text_encoder line not found — skipping (may already be patched)")
- 
-with open("gastrovision_pipeline.py", "w") as f:
-    f.write(txt)
- 
-print(f"  Patch complete ({changes}/2 fixes applied)")
-PATCH
+          import sys
+           
+          with open("gastrovision_pipeline.py") as f:
+              txt = f.read()
+           
+          changes = 0
+           
+          # ── Fix 1: VAE encode ────────────────────────────────────────────────────────
+          old1 = "            lat = vae.encode(pv).latent_dist.sample() * vae.config.scaling_factor"
+          new1 = (
+              "            _vae_dev = next(vae.parameters()).device\n"
+              "            lat = vae.encode(pv.to(_vae_dev)).latent_dist.sample() * vae.config.scaling_factor\n"
+              "            lat = lat.to(DEVICE)"
+          )
+          if old1 in txt:
+              txt = txt.replace(old1, new1, 1)
+              changes += 1
+              print("  ✓ VAE encode patch applied")
+          else:
+              print("  ⚠ VAE encode line not found — skipping (may already be patched)")
+           
+          # ── Fix 2: text encoder forward ──────────────────────────────────────────────
+          old2 = "            hs = text_encoder(ii)[0]"
+          new2 = (
+              "            _te_dev = next(text_encoder.parameters()).device\n"
+              "            hs = text_encoder(ii.to(_te_dev))[0]\n"
+              "            hs = hs.to(DEVICE)"
+          )
+          if old2 in txt:
+              txt = txt.replace(old2, new2, 1)
+              changes += 1
+              print("  ✓ text_encoder forward patch applied")
+          else:
+              print("  ⚠ text_encoder line not found — skipping (may already be patched)")
+           
+          with open("gastrovision_pipeline.py", "w") as f:
+              f.write(txt)
+           
+          print(f"  Patch complete ({changes}/2 fixes applied)")
+          PATCH
  
           echo "=== Starting pipeline ==="
           python gastrovision_pipeline.py \
