@@ -1375,8 +1375,12 @@ def domain_adapt_sd():
 
         te_on_gpu = next(text_encoder.parameters()).device == DEVICE
         if not te_on_gpu and not offload_cpu: text_encoder.to(DEVICE)
-        with torch.no_grad(): hs = text_encoder(ii)[0]
-        if offload_cpu: text_encoder.cpu(); torch.cuda.empty_cache()
+        with torch.no_grad(): 
+            hs = text_encoder(ii)[0]
+            
+        if offload_cpu: 
+            text_encoder.cpu(); 
+            torch.cuda.empty_cache()
 
         with autocast():
             pred = unet(nl, t, hs).sample
